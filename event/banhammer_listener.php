@@ -4,6 +4,7 @@
 * @package Ban Hammer
 * @copyright (c) 2015 phpBB Modders <https://phpbbmodders.net/>
 * @author Jari Kanerva <jari@tumba25.net>
+* @author Rich McGirr
 * @license http://opensource.org/licenses/gpl-2.0.php GNU General Public License v2
 *
 */
@@ -45,7 +46,8 @@ class banhammer_listener implements EventSubscriberInterface
 		\phpbb\request\request $request,
 		\phpbb\cache\driver\driver_interface $cache,
 		$phpbb_root_path,
-		$phpExt)
+		$phpExt,
+		\phpbb\config\config $config)
 	{
 		$this->template		= $template;
 		$this->user			= $user;
@@ -55,6 +57,7 @@ class banhammer_listener implements EventSubscriberInterface
 		$this->cache		= $cache;
 		$this->root_path	= $phpbb_root_path;
 		$this->php_ext		= $phpExt;
+		$this->config 		= $config;
 	}
 
 	public function do_ban_hammer_stuff($event)
@@ -63,12 +66,10 @@ class banhammer_listener implements EventSubscriberInterface
 		$this->user_id	= (int) $this->data['user_id'];
 		$curl_exists	= (function_exists('curl_init')) ? true : false;
 
-		$admin_mod_array = $this->admin_mod_array();
-
 		/**
 		 * Split these up and give error messages? Later maybe.
 		 */
-		if (!$this->auth->acl_get('m_ban') || ($this->data['user_type'] == USER_FOUNDER && $this->user->data['user_type'] != USER_FOUNDER) || $this->user_id == $this->user->data['user_id'] || in_array($this->data['user_id'], $admin_mod_array))
+		if (!$this->auth->acl_get('m_ban') || $this->data['user_type'] == USER_FOUNDER || $this->user_id == $this->user->data['user_id'])
 		{
 			// Nothing to see here, move on.
 			// Only let founders be banned by other founders.
@@ -76,7 +77,7 @@ class banhammer_listener implements EventSubscriberInterface
 			return;
 		}
 
-		$this->user->add_lang_ext('phpbbmodders/banhammer', 'banhammer_lang');
+		$this->user->add_lang_ext('phpbbmodders/banhammer', 'banhammer');
 
 		// Check if this user already is banned.
 		if (!function_exists('phpbb_get_banned_user_ids'))
@@ -122,26 +123,18 @@ class banhammer_listener implements EventSubscriberInterface
 			return;
 		}
 
-		// Get Ban Hammer settings
-		$sql = 'SELECT * FROM ' . CONFIG_TEXT_TABLE . "
-				WHERE config_name = 'banhammer_settings'";
-		$result = $this->db->sql_query($sql);
-		$settings = $this->db->sql_fetchfield('config_value');
-		$this->db->sql_freeresult($result);
-		$settings = unserialize($settings);
-
-		if ($settings['group_id'])
+		if ($this->config['bh_group_id'])
 		{
 			// Get group name for banned users, if any.
 			$sql = 'SELECT group_id, group_name FROM ' . GROUPS_TABLE . '
-					WHERE group_id = ' . (int) $settings['group_id'];
+					WHERE group_id = ' . (int) $this->config['bh_group_id'];
 			$result = $this->db->sql_query($sql);
 			$group_name = $this->db->sql_fetchfield('group_name');
 			$this->db->sql_freeresult($result);
 
 			if (empty($group_name))
 			{
-				$settings['group_id'] = 0;
+				$this->config['bh_group_id'] = 0;
 			}
 		}
 
@@ -154,17 +147,17 @@ class banhammer_listener implements EventSubscriberInterface
 			);
 
 			$this->template->assign_vars(array(
-				'BH_BAN_EMAIL'		=> $settings['ban_email'],
-				'BH_BAN_IP'			=> $settings['ban_ip'],
-				'BH_DEL_AVATAR'		=> $settings['del_avatar'],
-				'BH_DEL_PRIVMSGS'	=> $settings['del_privmsgs'],
-				'BH_DEL_POSTS'		=> $settings['del_posts'],
-				'BH_DEL_PROFILE'	=> $settings['del_profile'],
-				'BH_DEL_SIGNATURE'	=> $settings['del_signature'],
+				'BH_BAN_EMAIL'		=> $this->config['bh_ban_email'],
+				'BH_BAN_IP'			=> $this->config['bh_ban_ip'],
+				'BH_DEL_AVATAR'		=> $this->config['bh_del_avatar'],
+				'BH_DEL_PRIVMSGS'	=> $this->config['bh_del_privmsgs'],
+				'BH_DEL_POSTS'		=> $this->config['bh_del_posts'],
+				'BH_DEL_PROFILE'	=> $this->config['bh_del_profile'],
+				'BH_DEL_SIGNATURE'	=> $this->config['bh_del_signature'],
 
 				'L_BH_MOVE_GROUP'	=> (!empty($group_name)) ? sprintf($this->user->lang['BH_MOVE_GROUP'], $group_name) : '',
 
-				'S_BH_SFS'	=> (!empty($settings['sfs_api_key']) && $curl_exists) ? true : false,
+				'S_BH_SFS'	=> (!empty($this->config['bh_sfs_api_key']) && $curl_exists) ? true : false,
 				'S_SHOW_BH'	=> true,
 
 				'U_HAMMERBAN'	=> append_sid($this->root_path . 'memberlist.' . $this->php_ext, $params),
@@ -181,7 +174,7 @@ class banhammer_listener implements EventSubscriberInterface
 				'bh_reason'			=> $this->request->variable('bh_reason', '', true),
 				'bh_reason_user'	=> $this->request->variable('bh_reason_user', '', true),
 				'del_avatar'		=> $this->request->variable('del_avatar', 0),
-				'del_privmsgs'			=> $this->request->variable('del_privmsgs', 0),
+				'del_privmsgs'		=> $this->request->variable('del_privmsgs', 0),
 				'del_posts'			=> $this->request->variable('del_posts', 0),
 				'del_profile'		=> $this->request->variable('del_profile', 0),
 				'del_signature'		=> $this->request->variable('del_signature', 0),
@@ -191,7 +184,7 @@ class banhammer_listener implements EventSubscriberInterface
 			);
 
 			$message = sprintf($this->user->lang['SURE_BAN'], $this->data['username']) . '<br /><br />';
-			$message .= $this->user->lang['THIS_WILL'] . '' . $this->user->lang['COLON'] . '<br />' . $this->user->lang['BH_BAN_USER'] . '<br />';
+			$message .= $this->user->lang['THIS_WILL'] . $this->user->lang['COLON'] . '<br />' . $this->user->lang['BH_BAN_USER'] . '<br />';
 			$message .= ($hidden_fields['ban_email'])		? $this->user->lang['BH_BAN_EMAIL'] . '<br />' : '';
 			$message .= ($hidden_fields['ban_ip'])			? $this->user->lang['BH_BAN_IP'] . '<br />' : '';
 			$message .= ($hidden_fields['bh_reason'])		? sprintf($this->user->lang['BH_REASON'], $hidden_fields['bh_reason']) . '<br />' : '';
@@ -211,8 +204,8 @@ class banhammer_listener implements EventSubscriberInterface
 		$error = array();
 
 		// Any reason for this ban?
-		$bh_reason		= $this->request->variable('bh_reason', '', true);
-		$bh_reason_user	= $this->request->variable('bh_reason_user', '', true);
+		$bh_reason		= $this->request->variable('bh_reason', '');
+		$bh_reason_user	= $this->request->variable('bh_reason_user', '');
 
 		// The username is the user so it's always banned.
 		$success = user_ban('user', $this->data['username'], 0, '', false, $bh_reason, $bh_reason_user);
@@ -263,20 +256,20 @@ class banhammer_listener implements EventSubscriberInterface
 					SET user_sig = '',
 						user_sig_bbcode_uid = '',
 						user_sig_bbcode_bitfield = ''
-					WHERE user_id = " . $this->user_id;
+					WHERE user_id = " . (int) $this->user_id;
 			$this->db->sql_query($sql);
 		}
 
 		if ($this->request->variable('del_profile', 0))
 		{
 			$sql = 'DELETE FROM ' . PROFILE_FIELDS_DATA_TABLE . '
-					WHERE user_id = ' . $this->user_id;
+					WHERE user_id = ' . (int) $this->user_id;
 			$this->db->sql_query($sql);
 		}
 
 		if ($this->request->variable('move_group', 0) && !empty($group_name))
 		{
-			$return = group_user_add($settings['group_id'], array($this->user_id), array($this->data['username']), $group_name, true);
+			$return = group_user_add($this->config['bh_group_id'], array($this->user_id), array($this->data['username']), $group_name, true);
 
 			if ($return != false)
 			{
@@ -284,14 +277,14 @@ class banhammer_listener implements EventSubscriberInterface
 			}
 		}
 
-		if ($this->request->variable('sfs_report', 0) && !empty($settings['sfs_api_key']) && $curl_exists)
+		if ($this->request->variable('sfs_report', 0) && !empty($this->config['bh_sfs_api_key']) && $curl_exists)
 		{
 			// add the spammer to the SFS database
 			$http_request = 'http://www.stopforumspam.com/add.php';
 			$http_request .= '?username=' . $this->data['username'];
 			$http_request .= '&ip_addr=' . $this->data['user_ip'];
 			$http_request .= '&email=' . $this->data['user_email'];
-			$http_request .= '&api_key=' . $settings['sfs_api_key'];
+			$http_request .= '&api_key=' . $this->config['bh_sfs_api_key'];
 
 			$response = $this->get_file($http_request);
 
@@ -302,7 +295,7 @@ class banhammer_listener implements EventSubscriberInterface
 		}
 
 		// Need to purge the cache.
-		$this->cache->purge();
+		$this->cache->destroy('sql', BANLIST_TABLE);
 
 		// The page needs to be reloaded to show the new banned status.
 		$args = array(
@@ -351,7 +344,7 @@ class banhammer_listener implements EventSubscriberInterface
 
 	private function bh_del_posts()
 	{
-		$user_id = $this->user_id;
+		$user_id = (int) $this->user_id;
 
 		// Close reports.
 		// Topics can have more than one reported post so we need to get them first.
@@ -447,7 +440,6 @@ class banhammer_listener implements EventSubscriberInterface
 		curl_setopt($ch, CURLOPT_URL, $url);
 		curl_setopt($ch, CURLOPT_TIMEOUT, 5);
 		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
-		$contents = curl_exec($ch);
 		$httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 		curl_close($ch);
 
@@ -458,20 +450,5 @@ class banhammer_listener implements EventSubscriberInterface
 		}
 
 		return(true);
-	}
-
-	// Check for admins and mods
-	public function admin_mod_array()
-	{
-		// grab all admins
-		$admin_ary = $this->auth->acl_get_list(false, 'a_', false);
-		$admin_ary = (!empty($admin_ary[0]['a_'])) ? $admin_ary[0]['a_'] : array();
-
-		//grab all mods
-		$mod_ary = $this->auth->acl_get_list(false,'m_', false);
-		$mod_ary = (!empty($mod_ary[0]['m_'])) ? $mod_ary[0]['m_'] : array();
-		$admin_mod_array = array_unique(array_merge($admin_ary, $mod_ary));
-
-		return $admin_mod_array;
 	}
 }
